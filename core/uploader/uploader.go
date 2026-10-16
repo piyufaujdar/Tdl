@@ -3,6 +3,7 @@ package uploader
 import (
 	"context"
 	"io"
+	"sync"
 	"time"
 
 	"github.com/gabriel-vasile/mimetype"
@@ -14,6 +15,7 @@ import (
 	"github.com/gotd/td/tg"
 	"github.com/samber/lo"
 	"golang.org/x/sync/errgroup"
+	"go.uber.org/multierr"
 
 	"github.com/iyear/tdl/core/util/fsutil"
 	"github.com/iyear/tdl/core/util/mediautil"
@@ -39,6 +41,10 @@ func New(o Options) *Uploader {
 
 func (u *Uploader) Upload(ctx context.Context, limit int) error {
 	wg, wgctx := errgroup.WithContext(ctx)
+	var (
+		mu sync.Mutex
+		batchErr error
+	)
 	wg.SetLimit(limit)
 
 	for u.opts.Iter.Next(wgctx) {
@@ -54,18 +60,24 @@ func (u *Uploader) Upload(ctx context.Context, limit int) error {
 					return errors.Wrap(err, "upload")
 				}
 
-				// don't return error, just log it
+				// Keep processing other files, but report this failure after all workers finish.
+				mu.Lock()
+				rerr = errors.Wrapf(err, "upload %v", elem)
+				batchErr = multierr.Append(batchErr, rerr)
+				mu.Unlock()
 			}
 
 			return nil
 		})
 	}
 
-	if err := u.opts.Iter.Err(); err != nil {
-		return errors.Wrap(err, "iter")
+	iterErr := u.opts.Iter.Err()
+	workerErr := wg.Wait()
+	if iterErr != nil {
+		batchErr = multierr.Append(batchErr, errors.Wrap(iterErr, "iter"))
 	}
-
-	return wg.Wait()
+	batchErr = multierr.Append(batchErr, workerErr)
+	return batchErr
 }
 
 func (u *Uploader) upload(ctx context.Context, elem Elem) error {
