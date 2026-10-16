@@ -64,7 +64,8 @@ func (d *Downloader) Download(ctx context.Context, limit int) error {
 						zap.Error(err),
 					)
 				mu.Lock()
-				batchErr = multierr.Append(batchErr, errors.Wrapf(err, "download %v", elem))
+				rerr = errors.Wrapf(err, "download %v", elem)
+				batchErr = multierr.Append(batchErr, rerr)
 				mu.Unlock()
 			}
 
