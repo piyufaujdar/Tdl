@@ -2,10 +2,12 @@ package downloader
 
 import (
 	"context"
+	"sync"
 
 	"github.com/go-faster/errors"
 	"github.com/gotd/td/telegram/downloader"
 	"go.uber.org/zap"
+	"go.uber.org/multierr"
 	"golang.org/x/sync/errgroup"
 
 	"github.com/iyear/tdl/core/dcpool"
@@ -35,6 +37,10 @@ func New(opts Options) *Downloader {
 
 func (d *Downloader) Download(ctx context.Context, limit int) error {
 	wg, wgctx := errgroup.WithContext(ctx)
+	var (
+		mu sync.Mutex
+		batchErr error
+	)
 	wg.SetLimit(limit)
 
 	for d.opts.Iter.Next(wgctx) {
@@ -57,17 +63,22 @@ func (d *Downloader) Download(ctx context.Context, limit int) error {
 						zap.Any("element", elem),
 						zap.Error(err),
 					)
+				mu.Lock()
+				batchErr = multierr.Append(batchErr, errors.Wrapf(err, "download %v", elem))
+				mu.Unlock()
 			}
 
 			return nil
 		})
 	}
 
-	if err := d.opts.Iter.Err(); err != nil {
-		return errors.Wrap(err, "iter")
+	iterErr := d.opts.Iter.Err()
+	workerErr := wg.Wait()
+	if iterErr != nil {
+		batchErr = multierr.Append(batchErr, errors.Wrap(iterErr, "iter"))
 	}
-
-	return wg.Wait()
+	batchErr = multierr.Append(batchErr, workerErr)
+	return batchErr
 }
 
 func (d *Downloader) download(ctx context.Context, elem Elem) error {
