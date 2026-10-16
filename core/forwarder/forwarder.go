@@ -11,6 +11,7 @@ import (
 	"github.com/gotd/td/tg"
 	"go.uber.org/atomic"
 	"go.uber.org/zap"
+	"go.uber.org/multierr"
 
 	"github.com/iyear/tdl/core/dcpool"
 	"github.com/iyear/tdl/core/logctx"
@@ -51,6 +52,7 @@ func New(opts Options) *Forwarder {
 }
 
 func (f *Forwarder) Forward(ctx context.Context) error {
+	var forwardErr error
 	for f.opts.Iter.Next(ctx) {
 		elem := f.opts.Iter.Value()
 		if _, ok := f.sent[f.tuple(elem.From(), elem.Msg())]; ok {
@@ -61,10 +63,15 @@ func (f *Forwarder) Forward(ctx context.Context) error {
 		if _, ok := elem.Msg().GetGroupedID(); ok && elem.AsGrouped() {
 			grouped, err := tutil.GetGroupedMessages(ctx, f.opts.Pool.Default(ctx), elem.From().InputPeer(), elem.Msg())
 			if err != nil {
+				forwardErr = multierr.Append(forwardErr, errors.Wrapf(err, "get grouped messages %d", elem.Msg().ID))
 				continue
 			}
 
 			if err = f.forwardMessage(ctx, elem, grouped...); err != nil {
+				if errors.Is(err, context.Canceled) {
+					return multierr.Append(forwardErr, err)
+				}
+				forwardErr = multierr.Append(forwardErr, errors.Wrapf(err, "forward grouped message %d", elem.Msg().ID))
 				continue
 			}
 
@@ -74,13 +81,14 @@ func (f *Forwarder) Forward(ctx context.Context) error {
 		if err := f.forwardMessage(ctx, elem); err != nil {
 			// canceled by user, so we directly return error to stop all
 			if errors.Is(err, context.Canceled) {
-				return err
+				return multierr.Append(forwardErr, err)
 			}
+			forwardErr = multierr.Append(forwardErr, errors.Wrapf(err, "forward message %d", elem.Msg().ID))
 			continue
 		}
 	}
 
-	return f.opts.Iter.Err()
+	return multierr.Append(forwardErr, f.opts.Iter.Err())
 }
 
 func (f *Forwarder) forwardMessage(ctx context.Context, elem Elem, grouped ...*tg.Message) (rerr error) {
