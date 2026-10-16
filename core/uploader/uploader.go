@@ -62,7 +62,8 @@ func (u *Uploader) Upload(ctx context.Context, limit int) error {
 
 				// Keep processing other files, but report this failure after all workers finish.
 				mu.Lock()
-				batchErr = multierr.Append(batchErr, errors.Wrapf(err, "upload %v", elem))
+				rerr = errors.Wrapf(err, "upload %v", elem)
+				batchErr = multierr.Append(batchErr, rerr)
 				mu.Unlock()
 			}
 
